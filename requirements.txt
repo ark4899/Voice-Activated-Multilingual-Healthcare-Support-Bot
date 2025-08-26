@@ -1,0 +1,11 @@
+flask
+flask-cors
+openai
+pyaudio
+SpeechRecognition
+transformers
+torch
+langchain
+faiss-cpu
+python-dotenv
+gTTS
