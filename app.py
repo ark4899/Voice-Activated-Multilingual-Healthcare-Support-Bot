@@ -20,7 +20,7 @@ from langdetect import detect
 
 # Load environment variables
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY") or "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"
+openai.api_key = os.getenv("OPENAI_API_KEY") or "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"
 
 # Streamlit page config
 st.set_page_config(page_title="Healthcare Voice Bot", page_icon="🩺", layout="wide")
@@ -35,30 +35,21 @@ uploaded_files = st.file_uploader(
 
 # ---------------- Callback for Streaming ----------------
 class StreamHandler(BaseCallbackHandler):
-    def __init__(self, container, tts_enabled=False, lang="en"):
+    def __init__(self, container):
         self.container = container
-        self.tts_enabled = tts_enabled
-        self.lang = lang
         self.text = ""
-        self.audio_file = None
 
     def on_llm_new_token(self, token: str, **kwargs):
         self.text += token
         self.container.markdown(f"### 📝 Answer:\n{self.text}")
-        
-        # Generate speech progressively if TTS is enabled
-        if self.tts_enabled and len(self.text) % 30 == 0:
-            try:
-                tts = gTTS(self.text, lang=self.lang)
-                tts_file = BytesIO()
-                tts.write_to_fp(tts_file)
-                tts_file.seek(0)
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-                    f.write(tts_file.read())
-                    self.audio_file = f.name
-                st.audio(self.audio_file, format="audio/mp3")
-            except Exception:
-                pass
+
+# Initialize session state variables
+if "last_answer" not in st.session_state:
+    st.session_state.last_answer = ""
+if "audio_path" not in st.session_state:
+    st.session_state.audio_path = None
+if "auto_speak" not in st.session_state:
+    st.session_state.auto_speak = False
 
 if uploaded_files:
     docs = []
@@ -75,7 +66,7 @@ if uploaded_files:
     vectorstore = FAISS.from_documents(split_docs, embeddings)
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-    # Use ConversationalRetrievalChain instead of RetrievalQA for streaming
+    # ConversationalRetrievalChain for streaming
     chat_model = ChatOpenAI(model="gpt-4o", temperature=0, streaming=True)
     qa_chain = ConversationalRetrievalChain.from_llm(
         llm=chat_model,
@@ -91,8 +82,12 @@ if uploaded_files:
     input_method = st.radio("Choose input method:", ["Type", "Speak"])
     query = ""
 
+    # Flag to check if auto-speaking is needed
+    st.session_state.auto_speak = False
+
     if input_method == "Type":
         query = st.text_input("💬 Type your question here:")
+
     elif input_method == "Speak":
         if st.button("🎤 Record Question"):
             recognizer = sr.Recognizer()
@@ -102,22 +97,50 @@ if uploaded_files:
                 try:
                     query = recognizer.recognize_google(audio)
                     st.success(f"You said: {query}")
+                    st.session_state.auto_speak = True  # Enable auto-speak for voice input
                 except Exception as e:
                     st.error(f"Could not recognize speech: {e}")
 
-    # ---------------- Real-Time Streaming Answer ----------------
+    # ---------------- Generate Answer ----------------
     if query:
         st.markdown("### 📝 Answer:")
         container = st.empty()
+        callback = StreamHandler(container=container)
 
-        # Detect language for TTS
-        try:
-            lang_code = detect(query)
-        except:
-            lang_code = "en"
-
-        enable_tts = st.checkbox("🔊 Speak Answer in Real-Time")
-
-        callback = StreamHandler(container=container, tts_enabled=enable_tts, lang=lang_code)
         with st.spinner("Generating answer..."):
-            qa_chain.run({"question": query, "chat_history": []}, callbacks=[callback])
+            result = qa_chain.run({"question": query, "chat_history": []}, callbacks=[callback])
+
+        # Save answer in session state
+        st.session_state.last_answer = result
+        st.session_state.audio_path = None  # Reset audio path
+
+    # ---------------- Speak Answer ----------------
+    if st.session_state.last_answer:
+        # For manual speaking in Type mode
+        speak_checkbox = st.checkbox("🔊 Speak Answer") if not st.session_state.auto_speak else True
+
+        # Generate audio if not already generated
+        if speak_checkbox and st.session_state.audio_path is None:
+            try:
+                # Detect language
+                try:
+                    lang_code = detect(st.session_state.last_answer)
+                except:
+                    lang_code = "en"
+
+                # Generate TTS file once
+                tts = gTTS(st.session_state.last_answer, lang=lang_code)
+                tts_file = BytesIO()
+                tts.write_to_fp(tts_file)
+                tts_file.seek(0)
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+                    f.write(tts_file.read())
+                    st.session_state.audio_path = f.name
+
+            except Exception as e:
+                st.error(f"TTS error: {e}")
+
+        # Play the audio if available
+        if st.session_state.audio_path and speak_checkbox:
+            st.audio(st.session_state.audio_path, format="audio/mp3")
