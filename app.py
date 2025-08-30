@@ -17,6 +17,8 @@ import speech_recognition as sr
 from gtts import gTTS
 from io import BytesIO
 from langdetect import detect
+import asyncio
+import edge_tts
 
 # Load environment variables
 load_dotenv()
@@ -26,6 +28,11 @@ openai.api_key = os.getenv("OPENAI_API_KEY") or "sk-proj-wmE_Y_sp61R9l5uT7tY4Ixa
 st.set_page_config(page_title="Healthcare Voice Bot", page_icon="🩺", layout="wide")
 st.title("🩺 Real-Time Voice-Activated Healthcare Bot")
 
+# Initialize session state for answer
+if "answer" not in st.session_state:
+    st.session_state.answer = None
+
+    
 # ---------------- PDF Upload ----------------
 uploaded_files = st.file_uploader(
     "📂 Upload guidelines & patient reports (multiple PDFs)",
@@ -79,8 +86,15 @@ if uploaded_files:
 
     # ---------------- User Input ----------------
     st.subheader("Ask a question")
+    previous_method = st.session_state.get("input_method", None)
     input_method = st.radio("Choose input method:", ["Type", "Speak"])
     query = ""
+
+    # Reset audio whenever input method changes
+    if previous_method and previous_method != input_method:
+        st.session_state.audio_path = None
+        st.session_state.last_answer = ""
+    st.session_state.input_method = input_method
 
     # Flag to check if auto-speaking is needed
     st.session_state.auto_speak = False
@@ -103,44 +117,47 @@ if uploaded_files:
 
     # ---------------- Generate Answer ----------------
     if query:
-        st.markdown("### 📝 Answer:")
-        container = st.empty()
-        callback = StreamHandler(container=container)
+     # Check if it's a new query, avoid re-running unnecessarily
+        if st.session_state.get("last_query") != query:
+            st.markdown("### 📝 Answer:")
+            container = st.empty()
+            callback = StreamHandler(container=container)
 
-        with st.spinner("Generating answer..."):
-            result = qa_chain.run({"question": query, "chat_history": []}, callbacks=[callback])
+            with st.spinner("Generating answer..."):
+                result = qa_chain.run({"question": query, "chat_history": []}, callbacks=[callback])
 
-        # Save answer in session state
-        st.session_state.last_answer = result
-        st.session_state.audio_path = None  # Reset audio path
+            # Save answer and reset audio
+            st.session_state.last_answer = result
+            st.session_state.last_query = query
+            st.session_state.audio_path = None
 
-    # ---------------- Speak Answer ----------------
-    if st.session_state.last_answer:
-        # For manual speaking in Type mode
-        speak_checkbox = st.checkbox("🔊 Speak Answer") if not st.session_state.auto_speak else True
+# Always display the saved answer if available
+if st.session_state.get("last_answer"):
+        st.write(st.session_state.last_answer)
 
-        # Generate audio if not already generated
-        if speak_checkbox and st.session_state.audio_path is None:
+
+   # ---------------- Speak Answer ----------------
+if st.session_state.get("last_answer"):   # <-- Make sure this starts at 0 indent
+    speak_answer = st.checkbox("🔊 Speak Answer")
+
+    if speak_answer:
+        # Generate audio only once per answer
+        if "audio_path" not in st.session_state or not st.session_state.audio_path:
             try:
-                # Detect language
-                try:
-                    lang_code = detect(st.session_state.last_answer)
-                except:
-                    lang_code = "en"
+                from gtts import gTTS
+                import tempfile
+                from langdetect import detect
+                lang_code = detect(st.session_state.last_answer)
+            except:
+                lang_code = "en"
 
-                # Generate TTS file once
-                tts = gTTS(st.session_state.last_answer, lang=lang_code)
-                tts_file = BytesIO()
-                tts.write_to_fp(tts_file)
-                tts_file.seek(0)
+            # Create temporary audio file
+            tts = gTTS(st.session_state.last_answer, lang=lang_code)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+                tts.save(f.name)
+                st.session_state.audio_path = f.name
 
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-                    f.write(tts_file.read())
-                    st.session_state.audio_path = f.name
+        # Instantly play saved audio
+        st.audio(st.session_state.audio_path, format="audio/mp3")
 
-            except Exception as e:
-                st.error(f"TTS error: {e}")
 
-        # Play the audio if available
-        if st.session_state.audio_path and speak_checkbox:
-            st.audio(st.session_state.audio_path, format="audio/mp3")
