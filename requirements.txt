@@ -1,3 +1,6 @@
+portaudio19-dev
+tesseract-ocr
+libgl1
 flask
 flask-cors
 openai
